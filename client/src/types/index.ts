@@ -42,6 +42,8 @@ export interface SpaceshipState {
   turretAngle: number;
   miningLaserActive: boolean;
   miningLaserTarget: string | null;
+  thrusting: boolean;
+  rotatingDir: number;
   components: {
     thrusters: ComponentState;
     weapons: ComponentState;

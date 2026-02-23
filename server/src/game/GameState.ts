@@ -44,6 +44,7 @@ export class GameState {
   private gunnerInput: GunnerInput = { angle: 0, firing: false, miningLaser: false };
   private engineerInput: EngineerInput = {};
   private shieldHitTimer = 0;
+  private _miningLaserCooldown = 0;
 
   constructor() {
     this.players = new Map();
@@ -226,16 +227,11 @@ export class GameState {
   private updateSpaceship(dt: number): void {
     const ship = this.state.spaceship;
 
-    // Apply engineer energy input
+    // Apply engineer energy input - accept any valid values (0..1), don't require total = 1
     if (this.engineerInput.thrusterPower !== undefined) {
-      const total = (this.engineerInput.thrusterPower ?? ship.thrusterPower) +
-                    (this.engineerInput.weaponPower ?? ship.weaponPower) +
-                    (this.engineerInput.shieldPower ?? ship.shieldPower);
-      if (Math.abs(total - 1) < 0.05) {
-        ship.thrusterPower = this.engineerInput.thrusterPower;
-        ship.weaponPower = this.engineerInput.weaponPower ?? ship.weaponPower;
-        ship.shieldPower = this.engineerInput.shieldPower ?? ship.shieldPower;
-      }
+      ship.thrusterPower = Math.max(0, Math.min(1, this.engineerInput.thrusterPower));
+      ship.weaponPower = Math.max(0, Math.min(1, this.engineerInput.weaponPower ?? ship.weaponPower));
+      ship.shieldPower = Math.max(0, Math.min(1, this.engineerInput.shieldPower ?? ship.shieldPower));
     }
 
     // Handle repair
@@ -258,9 +254,13 @@ export class GameState {
     const thrusterMult = ship.components.thrusters.broken ? 0.1 : ship.thrusterPower * (1 + ship.upgrades.thrusters * 0.25);
     const weaponMult = ship.components.weapons.broken ? 0.1 : ship.weaponPower * (1 + ship.upgrades.weapons * 0.2);
 
-    // Pilot thrust/rotation
+    // Pilot thrust/rotation using angular velocity (inertia-based)
     const thrustForce = 200 * thrusterMult;
-    const rotateSpeed = 2.5;
+    const rotateTorque = 5.0; // angular acceleration in rad/s^2
+    const angularDrag = 0.88; // per tick drag on angular velocity
+
+    ship.thrusting = this.pilotInput.thrust > 0.1 && !ship.components.thrusters.broken;
+    ship.rotatingDir = this.pilotInput.rotate;
 
     if (!ship.components.thrusters.broken) {
       ship.vx += Math.cos(ship.angle) * this.pilotInput.thrust * thrustForce * dt;
@@ -270,8 +270,11 @@ export class GameState {
         ship.vx += Math.cos(ship.angle + Math.PI / 2) * this.pilotInput.strafe * thrustForce * 0.6 * dt;
         ship.vy += Math.sin(ship.angle + Math.PI / 2) * this.pilotInput.strafe * thrustForce * 0.6 * dt;
       }
+      // Rotation via angular velocity (inertia-based)
+      ship.angularVelocity += this.pilotInput.rotate * rotateTorque * dt;
     }
-    ship.angle += this.pilotInput.rotate * rotateSpeed * dt;
+    ship.angularVelocity *= angularDrag;
+    ship.angle += ship.angularVelocity * dt;
 
     // Drag
     ship.vx *= 0.985;
@@ -290,6 +293,25 @@ export class GameState {
     if (ship.y < 0) ship.y += MAP_HEIGHT;
     if (ship.y > MAP_HEIGHT) ship.y -= MAP_HEIGHT;
 
+    // Asteroid collision for ship
+    for (const ast of this.state.asteroids) {
+      const d = distance(ship.x, ship.y, ast.x, ast.y);
+      const minDist = ast.radius + 28;
+      if (d < minDist && d > 0) {
+        const nx = (ship.x - ast.x) / d;
+        const ny = (ship.y - ast.y) / d;
+        ship.x = ast.x + nx * minDist;
+        ship.y = ast.y + ny * minDist;
+        // Reflect velocity
+        const dot = ship.vx * nx + ship.vy * ny;
+        ship.vx -= 2 * dot * nx;
+        ship.vy -= 2 * dot * ny;
+        ship.vx *= 0.5;
+        ship.vy *= 0.5;
+        this.damageShip(5);
+      }
+    }
+
     // Shield regen
     if (this.shieldHitTimer > 0) {
       this.shieldHitTimer -= TICK_RATE_MS;
@@ -306,12 +328,12 @@ export class GameState {
     // Gunner input: update turret angle
     ship.turretAngle = this.gunnerInput.angle;
 
-    // Fire main gun
+    // Fire main gun - 8 rounds/sec = 125ms cooldown
     if (ship.mainGunCooldown > 0) ship.mainGunCooldown -= TICK_RATE_MS;
     if (this.gunnerInput.firing && !ship.components.weapons.broken && ship.mainGunCooldown <= 0) {
-      const cooldown = Math.max(100, 250 - ship.upgrades.weapons * 30);
+      const cooldown = Math.max(60, 125 - ship.upgrades.weapons * 10);
       ship.mainGunCooldown = cooldown / weaponMult;
-      const projSpeed = 600 + ship.upgrades.weapons * 50;
+      const projSpeed = 900 + ship.upgrades.weapons * 80;
       const dmg = 15 * (1 + ship.upgrades.weapons * 0.2) * weaponMult;
       const spread = ship.upgrades.hasMountedGuns ? 0.05 : 0;
       this.state.projectiles.push(createProjectile(
@@ -333,21 +355,59 @@ export class GameState {
       }
     }
 
-    // Mining laser
-    ship.miningLaserActive = this.gunnerInput.miningLaser && !!this.gunnerInput.miningTarget;
-    ship.miningLaserTarget = this.gunnerInput.miningTarget ?? null;
-    if (ship.miningLaserActive && ship.miningLaserTarget) {
-      const ast = this.state.asteroids.find(a => a.id === ship.miningLaserTarget);
-      if (ast && ast.hasOre && ast.ore > 0 && distance(ship.x, ship.y, ast.x, ast.y) < 400) {
-        const mineAmount = 2;
-        ast.ore = Math.max(0, ast.ore - mineAmount);
-        ship.ore += mineAmount;
-        if (ast.ore === 0) {
-          ast.hasOre = false;
-          ship.miningLaserTarget = null;
-          ship.miningLaserActive = false;
+    // Mining laser - direction-based, knocks ore chunks off asteroid
+    ship.miningLaserActive = this.gunnerInput.miningLaser;
+    if (ship.miningLaserActive) {
+      // Find asteroid in the direction of the turret angle
+      const laserAngle = this.gunnerInput.angle;
+      const LASER_RANGE = 500;
+      let hitAsteroid: typeof this.state.asteroids[0] | null = null;
+      let hitDist = LASER_RANGE;
+      for (const ast of this.state.asteroids) {
+        if (!ast.hasOre || ast.ore <= 0) continue;
+        const d = distance(ship.x, ship.y, ast.x, ast.y);
+        if (d > LASER_RANGE + ast.radius) continue;
+        // Check if asteroid is roughly in the direction of the laser
+        const angleToAst = angleTo(ship.x, ship.y, ast.x, ast.y);
+        const angleDiff = Math.abs(normalizeAngle(angleToAst - laserAngle));
+        if (angleDiff < Math.asin(Math.min(1, ast.radius / Math.max(1, d))) + 0.15) {
+          if (d < hitDist + ast.radius) {
+            hitDist = d;
+            hitAsteroid = ast;
+          }
         }
       }
+      ship.miningLaserTarget = hitAsteroid?.id ?? null;
+
+      if (hitAsteroid) {
+        // Knock ore chunk off the asteroid periodically
+        this._miningLaserCooldown -= TICK_RATE_MS;
+        if (this._miningLaserCooldown <= 0) {
+          this._miningLaserCooldown = 600; // spawn chunk every 600ms
+          const mineAmount = Math.min(10, hitAsteroid.ore);
+          if (mineAmount > 0) {
+            hitAsteroid.ore -= mineAmount;
+            if (hitAsteroid.ore <= 0) hitAsteroid.hasOre = false;
+            // Spawn chunk flying away from asteroid (not directly at ship)
+            const chunkAngle = laserAngle + Math.PI + (Math.random() - 0.5) * 1.5;
+            const speed = 60 + Math.random() * 80;
+            this.state.oreChunks.push({
+              id: `ore_chunk_${Date.now()}_${Math.random()}`,
+              x: hitAsteroid.x + Math.cos(laserAngle + Math.PI) * (hitAsteroid.radius + 5),
+              y: hitAsteroid.y + Math.sin(laserAngle + Math.PI) * (hitAsteroid.radius + 5),
+              vx: Math.cos(chunkAngle) * speed,
+              vy: Math.sin(chunkAngle) * speed,
+              amount: mineAmount,
+              ttl: 400,
+            });
+          }
+        }
+      } else {
+        this._miningLaserCooldown = 0;
+      }
+    } else {
+      ship.miningLaserTarget = null;
+      this._miningLaserCooldown = 0;
     }
 
     // Cooldown active scan
@@ -591,7 +651,19 @@ export class GameState {
         if (unit.state === 'mining' && unit.targetId) {
           const ast = this.state.asteroids.find(a => a.id === unit.targetId);
           if (ast && ast.hasOre && ast.ore > 0) {
-            if (distance(unit.x, unit.y, ast.x, ast.y) < ast.radius + 20) {
+            const hoverDist = ast.radius + 25;
+            const d = distance(unit.x, unit.y, ast.x, ast.y);
+            if (d < hoverDist + 10) {
+              // Hover at orbit distance - stop at the edge
+              if (d < hoverDist) {
+                const nx = (unit.x - ast.x) / (d || 1);
+                const ny = (unit.y - ast.y) / (d || 1);
+                unit.x = ast.x + nx * hoverDist;
+                unit.y = ast.y + ny * hoverDist;
+                unit.vx = 0;
+                unit.vy = 0;
+              }
+              // Mine
               unit.miningCooldown -= TICK_RATE_MS;
               if (unit.miningCooldown <= 0) {
                 const mined = Math.min(5, ast.ore);
@@ -600,6 +672,14 @@ export class GameState {
                 unit.miningCooldown = 500;
                 if (ast.ore <= 0) ast.hasOre = false;
               }
+              unit.waypoint = null;
+            } else {
+              // Move to hover position at edge of asteroid
+              const angleToAst = angleTo(unit.x, unit.y, ast.x, ast.y);
+              unit.waypoint = {
+                x: ast.x - Math.cos(angleToAst) * hoverDist,
+                y: ast.y - Math.sin(angleToAst) * hoverDist,
+              };
             }
           } else {
             unit.state = 'idle';
@@ -664,6 +744,20 @@ export class GameState {
             unit.state = 'idle';
             unit.waypoint = null;
           }
+        }
+      }
+
+      // Asteroid collision for commander units
+      for (const ast of this.state.asteroids) {
+        const d = distance(unit.x, unit.y, ast.x, ast.y);
+        const minDist = ast.radius + 14;
+        if (d < minDist && d > 0) {
+          const nx = (unit.x - ast.x) / d;
+          const ny = (unit.y - ast.y) / d;
+          unit.x = ast.x + nx * minDist;
+          unit.y = ast.y + ny * minDist;
+          unit.vx *= -0.3;
+          unit.vy *= -0.3;
         }
       }
 

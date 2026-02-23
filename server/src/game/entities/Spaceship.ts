@@ -21,6 +21,8 @@ export function createSpaceship(): SpaceshipState {
     turretAngle: 0,
     miningLaserActive: false,
     miningLaserTarget: null,
+    thrusting: false,
+    rotatingDir: 0,
     components: {
       thrusters: { health: 100, maxHealth: 100, broken: false },
       weapons:   { health: 100, maxHealth: 100, broken: false },
