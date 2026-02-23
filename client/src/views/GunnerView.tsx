@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { socket } from '../socket';
-import { GameStateData, GunnerInput, AsteroidState } from '../types';
+import { GameStateData, GunnerInput } from '../types';
 import GameCanvas from '../components/GameCanvas';
 
 interface Props { gameState: GameStateData; }
@@ -10,7 +10,6 @@ export default function GunnerView({ gameState }: Props) {
   const turretAngle = useRef(0);
   const firing = useRef(false);
   const miningLaser = useRef(false);
-  const miningTarget = useRef<string | undefined>(undefined);
   const missileMode = useRef(false);
 
   useEffect(() => {
@@ -21,39 +20,16 @@ export default function GunnerView({ gameState }: Props) {
 
   const ship = gameState.spaceship;
 
-  // Find nearest ore asteroid to cursor for mining
-  const findMiningTarget = useCallback((worldX: number, worldY: number): string | undefined => {
-    let nearest: AsteroidState | null = null;
-    let nearestDist = 400;
-    for (const ast of gameState.asteroids) {
-      if (!ast.hasOre || ast.ore <= 0) continue;
-      const d = Math.sqrt((ast.x - worldX) ** 2 + (ast.y - worldY) ** 2);
-      if (d < nearestDist) {
-        nearestDist = d;
-        nearest = ast;
-      }
-    }
-    return nearest?.id;
-  }, [gameState.asteroids]);
-
   useEffect(() => {
     const onMouseMove = (e: MouseEvent) => {
       const dx = e.clientX - dims.w / 2;
       const dy = e.clientY - dims.h / 2;
       turretAngle.current = Math.atan2(dy, dx);
 
-      // Find world position of cursor
-      const worldX = ship.x + dx;
-      const worldY = ship.y + dy;
-      if (miningLaser.current) {
-        miningTarget.current = findMiningTarget(worldX, worldY);
-      }
-
       const input: GunnerInput = {
         angle: turretAngle.current,
         firing: firing.current,
         miningLaser: miningLaser.current,
-        miningTarget: miningTarget.current,
         missileMode: missileMode.current,
       };
       socket.emit('gunnerInput', input);
@@ -64,27 +40,22 @@ export default function GunnerView({ gameState }: Props) {
         firing.current = true;
       } else if (e.button === 2) {
         miningLaser.current = true;
-        const dx = e.clientX - dims.w / 2;
-        const dy = e.clientY - dims.h / 2;
-        miningTarget.current = findMiningTarget(ship.x + dx, ship.y + dy);
       }
       const input: GunnerInput = {
         angle: turretAngle.current,
         firing: firing.current,
         miningLaser: miningLaser.current,
-        miningTarget: miningTarget.current,
       };
       socket.emit('gunnerInput', input);
     };
 
     const onMouseUp = (e: MouseEvent) => {
       if (e.button === 0) firing.current = false;
-      else if (e.button === 2) { miningLaser.current = false; miningTarget.current = undefined; }
+      else if (e.button === 2) { miningLaser.current = false; }
       const input: GunnerInput = {
         angle: turretAngle.current,
         firing: firing.current,
         miningLaser: miningLaser.current,
-        miningTarget: miningTarget.current,
       };
       socket.emit('gunnerInput', input);
     };
@@ -105,7 +76,7 @@ export default function GunnerView({ gameState }: Props) {
       window.removeEventListener('mouseup', onMouseUp);
       window.removeEventListener('keydown', onKeyDown);
     };
-  }, [dims, ship, findMiningTarget]);
+  }, [dims, ship]);
 
   const renderExtra = useCallback((ctx: CanvasRenderingContext2D, toScreen: (wx: number, wy: number) => { x: number; y: number }) => {
     // Draw turret aim line
@@ -118,6 +89,18 @@ export default function GunnerView({ gameState }: Props) {
     ctx.strokeStyle = '#00ff4188';
     ctx.lineWidth = 2;
     ctx.stroke();
+
+    // Mining laser beam line (show direction)
+    if (miningLaser.current) {
+      ctx.beginPath();
+      ctx.moveTo(s.x, s.y);
+      ctx.lineTo(s.x + Math.cos(angle) * 500, s.y + Math.sin(angle) * 500);
+      ctx.strokeStyle = '#ffaa0066';
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([8, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    }
 
     // Crosshair at cursor center
     const cx = dims.w / 2;
@@ -164,7 +147,7 @@ export default function GunnerView({ gameState }: Props) {
           )}
           <div style={{ marginTop: 8, color: '#444' }}>
             <div>LMB: Fire main gun</div>
-            <div>RMB: Mining laser</div>
+            <div>RMB: Mining laser (aim at asteroid)</div>
             <div>M: Missile mode</div>
           </div>
         </div>
@@ -193,7 +176,7 @@ export default function GunnerView({ gameState }: Props) {
           fontFamily: "'Courier New', Courier, monospace",
           color: '#ffaa00', fontSize: 12, pointerEvents: 'none',
         }}>
-          ◆ MINING LASER ACTIVE
+          ◆ MINING LASER ACTIVE {ship.miningLaserTarget ? '— LOCKED' : '— SCANNING'}
         </div>
       )}
     </div>

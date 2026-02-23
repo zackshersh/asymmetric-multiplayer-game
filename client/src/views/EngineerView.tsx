@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { socket } from '../socket';
 import { GameStateData, EngineerInput } from '../types';
 
@@ -52,13 +52,99 @@ const OWNED_BTN: React.CSSProperties = {
   cursor: 'default',
 };
 
+// Small ship canvas component
+function ShipWindow({ ship }: { ship: GameStateData['spaceship'] }) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const rafRef = useRef<number>(0);
+  const shipRef = useRef(ship);
+  const thrustTimeRef = useRef(0);
+  useEffect(() => { shipRef.current = ship; }, [ship]);
+
+  useEffect(() => {
+    const render = () => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      const W = 200, H = 200;
+      ctx.clearRect(0, 0, W, H);
+      ctx.fillStyle = '#0a0a0f';
+      ctx.fillRect(0, 0, W, H);
+      // Grid dots
+      ctx.fillStyle = '#ffffff22';
+      for (let gx = 0; gx < W; gx += 20) {
+        for (let gy = 0; gy < H; gy += 20) {
+          ctx.beginPath();
+          ctx.arc(gx, gy, 1, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
+      const s = shipRef.current;
+      const cx = W / 2, cy = H / 2;
+      const z = 1.2;
+      if (s.thrusting) thrustTimeRef.current++;
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.rotate(s.angle);
+      // Flame
+      if (s.thrusting) {
+        const fl = (0.6 + 0.4 * Math.sin(thrustTimeRef.current * 0.03)) * 28 * z;
+        ctx.beginPath();
+        ctx.moveTo(-12 * z, 0);
+        ctx.lineTo(-12 * z - fl, (Math.random() - 0.5) * 4 * z);
+        ctx.strokeStyle = '#ff6600';
+        ctx.lineWidth = 3 * z;
+        ctx.globalAlpha = 0.85;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+      }
+      // Shield
+      if (s.shields > 0) {
+        const alpha = Math.min(0.4, s.shields / s.maxShields * 0.4);
+        ctx.beginPath();
+        ctx.arc(0, 0, 40 * z, 0, Math.PI * 2);
+        ctx.fillStyle = `rgba(0,191,255,${alpha})`;
+        ctx.fill();
+      }
+      ctx.beginPath();
+      ctx.moveTo(30 * z, 0);
+      ctx.lineTo(-20 * z, 18 * z);
+      ctx.lineTo(-12 * z, 0);
+      ctx.lineTo(-20 * z, -18 * z);
+      ctx.closePath();
+      ctx.strokeStyle = '#00ff41';
+      ctx.fillStyle = '#0d1a0d';
+      ctx.lineWidth = 2;
+      ctx.fill();
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(12 * z, 0, 6 * z, 0, Math.PI * 2);
+      ctx.fillStyle = '#00bfff44';
+      ctx.strokeStyle = '#00bfff';
+      ctx.lineWidth = 1;
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+      rafRef.current = requestAnimationFrame(render);
+    };
+    rafRef.current = requestAnimationFrame(render);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, []);
+
+  return (
+    <canvas ref={canvasRef} width={200} height={200}
+      style={{ display: 'block', border: '1px solid #1a1a2e', borderRadius: 4 }} />
+  );
+}
+
 export default function EngineerView({ gameState }: Props) {
   const ship = gameState.spaceship;
   const [thrust, setThrust] = useState(Math.round(ship.thrusterPower * 100));
   const [weapon, setWeapon] = useState(Math.round(ship.weaponPower * 100));
   const [shield, setShield] = useState(Math.round(ship.shieldPower * 100));
 
-  // Sync from server
+  // Sync from server (only when not actively editing)
+  const lastSentRef = useRef({ t: thrust, w: weapon, s: shield });
   useEffect(() => {
     setThrust(Math.round(ship.thrusterPower * 100));
     setWeapon(Math.round(ship.weaponPower * 100));
@@ -66,42 +152,74 @@ export default function EngineerView({ gameState }: Props) {
   }, [ship.thrusterPower, ship.weaponPower, ship.shieldPower]);
 
   const sendEnergy = (t: number, w: number, s: number) => {
-    const total = t + w + s;
-    if (Math.abs(total - 100) <= 2) {
-      const input: EngineerInput = {
-        thrusterPower: t / 100,
-        weaponPower: w / 100,
-        shieldPower: s / 100,
-      };
-      socket.emit('engineerInput', input);
+    lastSentRef.current = { t, w, s };
+    const input: EngineerInput = {
+      thrusterPower: t / 100,
+      weaponPower: w / 100,
+      shieldPower: s / 100,
+    };
+    socket.emit('engineerInput', input);
+  };
+
+  // When one slider increases and would exceed 100%, steal from others proportionally
+  // When one slider decreases, don't auto-raise others
+  const handleThrust = (v: number) => {
+    if (v > thrust) {
+      // Increasing: take from others
+      const excess = (v + weapon + shield) - 100;
+      if (excess > 0) {
+        const total = weapon + shield;
+        const w = total > 0 ? Math.max(0, Math.round(weapon - excess * (weapon / total))) : 0;
+        const s = total > 0 ? Math.max(0, 100 - v - w) : Math.max(0, shield - excess);
+        setThrust(v); setWeapon(w); setShield(s);
+        sendEnergy(v, w, s);
+      } else {
+        setThrust(v);
+        sendEnergy(v, weapon, shield);
+      }
+    } else {
+      // Decreasing: just lower this slider
+      setThrust(v);
+      sendEnergy(v, weapon, shield);
     }
   };
 
-  const handleThrust = (v: number) => {
-    const remaining = 100 - v;
-    const wRatio = weapon / (weapon + shield || 1);
-    const w = Math.round(remaining * wRatio);
-    const s = remaining - w;
-    setThrust(v); setWeapon(w); setShield(s);
-    sendEnergy(v, w, s);
-  };
-
   const handleWeapon = (v: number) => {
-    const remaining = 100 - v;
-    const tRatio = thrust / (thrust + shield || 1);
-    const t = Math.round(remaining * tRatio);
-    const s = remaining - t;
-    setWeapon(v); setThrust(t); setShield(s);
-    sendEnergy(t, v, s);
+    if (v > weapon) {
+      const excess = (thrust + v + shield) - 100;
+      if (excess > 0) {
+        const total = thrust + shield;
+        const t = total > 0 ? Math.max(0, Math.round(thrust - excess * (thrust / total))) : 0;
+        const s = total > 0 ? Math.max(0, 100 - v - t) : Math.max(0, shield - excess);
+        setWeapon(v); setThrust(t); setShield(s);
+        sendEnergy(t, v, s);
+      } else {
+        setWeapon(v);
+        sendEnergy(thrust, v, shield);
+      }
+    } else {
+      setWeapon(v);
+      sendEnergy(thrust, v, shield);
+    }
   };
 
   const handleShield = (v: number) => {
-    const remaining = 100 - v;
-    const tRatio = thrust / (thrust + weapon || 1);
-    const t = Math.round(remaining * tRatio);
-    const w = remaining - t;
-    setShield(v); setThrust(t); setWeapon(w);
-    sendEnergy(t, w, v);
+    if (v > shield) {
+      const excess = (thrust + weapon + v) - 100;
+      if (excess > 0) {
+        const total = thrust + weapon;
+        const t = total > 0 ? Math.max(0, Math.round(thrust - excess * (thrust / total))) : 0;
+        const w = total > 0 ? Math.max(0, 100 - v - t) : Math.max(0, weapon - excess);
+        setShield(v); setThrust(t); setWeapon(w);
+        sendEnergy(t, w, v);
+      } else {
+        setShield(v);
+        sendEnergy(thrust, weapon, v);
+      }
+    } else {
+      setShield(v);
+      sendEnergy(thrust, weapon, v);
+    }
   };
 
   const repairComponent = (name: string) => {
@@ -113,6 +231,7 @@ export default function EngineerView({ gameState }: Props) {
   };
 
   const total = thrust + weapon + shield;
+  const utilization = Math.min(100, total);
 
   const isUpgradeOwned = (upg: typeof UPGRADES[0]) => {
     const upgrades = ship.upgrades;
@@ -137,7 +256,7 @@ export default function EngineerView({ gameState }: Props) {
       fontFamily: "'Courier New', Courier, monospace",
       color: '#00ff41', padding: 20, overflowY: 'auto' as const,
       display: 'grid',
-      gridTemplateColumns: '1fr 1fr 1fr',
+      gridTemplateColumns: '1fr 1fr 1fr 200px',
       gap: 20,
     },
     panel: {
@@ -147,7 +266,7 @@ export default function EngineerView({ gameState }: Props) {
     title: { color: '#00bfff', fontSize: 13, marginBottom: 12, letterSpacing: 2 },
     label: { color: '#888', fontSize: 11, marginBottom: 4 },
     slider: { width: '100%', accentColor: '#00ff41', marginBottom: 8 },
-    compBox: (broken: boolean, hp: number, maxHp: number) => ({
+    compBox: (broken: boolean, _hp: number, _maxHp: number) => ({
       border: `1px solid ${broken ? '#ff4444' : '#333'}`,
       padding: 10, marginBottom: 8,
       background: broken ? '#1a0000' : '#0d0d1a',
@@ -185,8 +304,19 @@ export default function EngineerView({ gameState }: Props) {
           </div>
         </div>
 
-        <div style={{ color: Math.abs(total - 100) > 2 ? '#ff4444' : '#555', fontSize: 11 }}>
-          TOTAL: {total}% {Math.abs(total - 100) > 2 ? '⚠ MUST SUM TO 100%' : '✓'}
+        {/* Energy utilization meter */}
+        <div style={{ marginBottom: 8 }}>
+          <div style={{ color: '#888', fontSize: 11, marginBottom: 4 }}>
+            ENERGY UTILIZATION: {utilization}%
+            {total > 100 && <span style={{ color: '#ff4444' }}> ⚠ OVER BUDGET</span>}
+          </div>
+          <div style={{ width: '100%', height: 8, background: '#222', border: '1px solid #333' }}>
+            <div style={{
+              width: `${utilization}%`, height: '100%',
+              background: total > 100 ? '#ff4444' : total > 85 ? '#ffaa00' : '#00ff41',
+              transition: 'width 0.1s',
+            }} />
+          </div>
         </div>
 
         <div style={{ marginTop: 16, borderTop: '1px solid #1a1a2e', paddingTop: 12 }}>
@@ -266,6 +396,19 @@ export default function EngineerView({ gameState }: Props) {
             })}
           </div>
         ))}
+      </div>
+
+      {/* Ship window */}
+      <div style={{ ...S.panel, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 8 }}>
+        <div style={S.title}>◆ SHIP CAM</div>
+        <ShipWindow ship={ship} />
+        <div style={{ color: '#555', fontSize: 10, textAlign: 'center' }}>
+          <div>HULL {((ship.health / ship.maxHealth) * 100).toFixed(0)}%</div>
+          <div>SHIELD {((ship.shields / ship.maxShields) * 100).toFixed(0)}%</div>
+          <div style={{ color: ship.thrusting ? '#00ff41' : '#333', marginTop: 4 }}>
+            {ship.thrusting ? '▲ THRUSTING' : '— COASTING'}
+          </div>
+        </div>
       </div>
     </div>
   );
