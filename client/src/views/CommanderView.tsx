@@ -381,10 +381,6 @@ export default function CommanderView({ gameState }: Props) {
       if (buildModeRef.current) {
         const bm = buildModeRef.current;
         const mp = mousePosRef.current;
-        const worldPos = {
-          x: (mp.x - w / 2) / z + cam.x,
-          y: (mp.y - h / 2) / z + cam.y,
-        };
         const sizes: Record<string, number> = { base: 60, factory: 35, turret: 25, research: 30 };
         const sz = (sizes[bm] || 30) * z;
         ctx.save();
@@ -420,7 +416,6 @@ export default function CommanderView({ gameState }: Props) {
         ctx.font = `${Math.max(10, 11 * z)}px Courier New`;
         ctx.fillText(`${STRUCTURE_COSTS[bm]} ore`, 0, sz + 14 * z);
         ctx.restore();
-        void worldPos;
       }
 
       // Minimap
@@ -562,9 +557,6 @@ export default function CommanderView({ gameState }: Props) {
 
       // Start selection box
       setSelectedStructureId(null);
-      if (!e.shiftKey) {
-        // Clear selection when starting new drag box (unless shift)
-      }
       selBoxRef.current = { active: true, x1: e.clientX, y1: e.clientY, x2: e.clientX, y2: e.clientY };
     }
   }, [toWorld]);

@@ -381,7 +381,6 @@ export class GameState {
 
       if (hitAsteroid) {
         // Knock ore chunk off the asteroid periodically
-        if (!this._miningLaserCooldown) this._miningLaserCooldown = 0;
         this._miningLaserCooldown -= TICK_RATE_MS;
         if (this._miningLaserCooldown <= 0) {
           this._miningLaserCooldown = 600; // spawn chunk every 600ms
@@ -657,8 +656,8 @@ export class GameState {
             if (d < hoverDist + 10) {
               // Hover at orbit distance - stop at the edge
               if (d < hoverDist) {
-                const nx = (unit.x - ast.x) / Math.max(1, d);
-                const ny = (unit.y - ast.y) / Math.max(1, d);
+                const nx = (unit.x - ast.x) / (d || 1);
+                const ny = (unit.y - ast.y) / (d || 1);
                 unit.x = ast.x + nx * hoverDist;
                 unit.y = ast.y + ny * hoverDist;
                 unit.vx = 0;

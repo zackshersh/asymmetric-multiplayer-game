@@ -266,7 +266,7 @@ export default function EngineerView({ gameState }: Props) {
     title: { color: '#00bfff', fontSize: 13, marginBottom: 12, letterSpacing: 2 },
     label: { color: '#888', fontSize: 11, marginBottom: 4 },
     slider: { width: '100%', accentColor: '#00ff41', marginBottom: 8 },
-    compBox: (broken: boolean, _hp: number, _maxHp: number) => ({
+    compBox: (broken: boolean) => ({
       border: `1px solid ${broken ? '#ff4444' : '#333'}`,
       padding: 10, marginBottom: 8,
       background: broken ? '#1a0000' : '#0d0d1a',
@@ -341,7 +341,7 @@ export default function EngineerView({ gameState }: Props) {
         {Object.entries(ship.components).map(([name, comp]) => (
           <div
             key={name}
-            style={S.compBox(comp.broken, comp.health, comp.maxHealth)}
+            style={S.compBox(comp.broken)}
             onClick={() => comp.broken && repairComponent(name)}
           >
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
