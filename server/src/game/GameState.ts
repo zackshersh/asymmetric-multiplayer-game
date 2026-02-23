@@ -201,7 +201,6 @@ export class GameState {
       if (struct && (struct.type === 'base' || struct.type === 'factory') && this.state.commanderOre >= cost) {
         this.state.commanderOre -= cost;
         struct.buildQueue.push(input.unitType!);
-        if (struct.buildProgress === 0) struct.buildProgress = 0;
       }
     }
   }
@@ -682,7 +681,7 @@ export class GameState {
       if ((struct.type === 'base' || struct.type === 'factory') && struct.buildQueue.length > 0) {
         struct.buildProgress += TICK_RATE_MS;
         const unitType = struct.buildQueue[0];
-        const buildTime = UNIT_BUILD_TIMES[unitType] * 1000 / TICK_RATE_MS;
+        const buildTime = UNIT_BUILD_TIMES[unitType] * TICK_RATE_MS;
         if (struct.buildProgress >= buildTime) {
           struct.buildProgress = 0;
           struct.buildQueue.shift();

@@ -50,7 +50,8 @@ export default function CommanderView({ gameState }: Props) {
     const interval = setInterval(() => {
       const k = keysRef.current;
       const cam = camRef.current;
-      const speed = 200 / cam.zoom;
+      const BASE_PAN_SPEED = 400;
+      const speed = BASE_PAN_SPEED / cam.zoom;
       const dt = 0.033;
       if (k.has('w') || k.has('arrowup'))    cam.y -= speed * dt;
       if (k.has('s') || k.has('arrowdown'))  cam.y += speed * dt;
